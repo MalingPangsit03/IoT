@@ -31,10 +31,18 @@ DHT dht(DHTPIN, DHTTYPE);
 #define LCDADDR 0x27
 LiquidCrystal_I2C lcd(LCDADDR, 16, 2);
 
-// Threshold
-const float TEMP_THRESHOLD = 30.0; // Celsius
+// Alert thresholds (with hysteresis)
+float TEMP_THRESHOLD_HIGH = 40.0; // turn on when >=
+float TEMP_THRESHOLD_LOW  = 39.0; // turn off when <=
 
-// Time
+float HUM_THRESHOLD_HIGH = 80.0;  // example humidity alert on
+float HUM_THRESHOLD_LOW  = 79.0;  // alert off
+
+// Alert state (for hysteresis)
+bool tempAlertActive = false;
+bool humAlertActive  = false;
+
+// Timezone
 const long gmtOffset_sec = 7 * 3600; // UTC+7
 const int daylightOffset_sec = 0;
 
@@ -48,7 +56,7 @@ int readDHTCount = 0;
 int readNan = 0;
 int errorWiFiCount = 0;
 
-// Timing
+// Timing upload
 unsigned long lastUpload = 0;
 const unsigned long uploadInterval = 60000; // 1 minute
 
@@ -150,9 +158,34 @@ void updateLCD(float adjustedTemp, float adjustedHum, const char* timeStr) {
   lcd.printf("T:%.1fC %s", adjustedTemp, deviceID.c_str());
   lcd.setCursor(0, 1);
   lcd.printf("H:%.1f%% %s", adjustedHum, timeStr);
-  // upload status on top-right (overwrites last char of first line)
+  // upload status on top-right
   lcd.setCursor(15, 0);
   lcd.print(lastUploadSuccess ? '+' : '-');
+}
+
+void applyAlerts(float adjustedTemp, float adjustedHum) {
+  // Temperature hysteresis
+  if (!tempAlertActive && adjustedTemp >= TEMP_THRESHOLD_HIGH) {
+    tempAlertActive = true;
+  } else if (tempAlertActive && adjustedTemp <= TEMP_THRESHOLD_LOW) {
+    tempAlertActive = false;
+  }
+
+  // Humidity hysteresis
+  if (!humAlertActive && adjustedHum >= HUM_THRESHOLD_HIGH) {
+    humAlertActive = true;
+  } else if (humAlertActive && adjustedHum <= HUM_THRESHOLD_LOW) {
+    humAlertActive = false;
+  }
+
+  // Combined alert
+  if (tempAlertActive || humAlertActive) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    digitalWrite(LED_PIN, HIGH);
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(LED_PIN, LOW);
+  }
 }
 
 void sendData(float adjustedTemp, float adjustedHum) {
@@ -161,24 +194,15 @@ void sendData(float adjustedTemp, float adjustedHum) {
     return;
   }
 
-  // Get time string safely
   struct tm timeinfo;
   char timeStr[9] = "--:--:--";
   if (getLocalTime(&timeinfo)) {
     strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
   }
 
-  // Display immediately (so user always sees fresh)
+  // Update display and apply alerts
   updateLCD(adjustedTemp, adjustedHum, timeStr);
-
-  // Alert
-  if (adjustedTemp > TEMP_THRESHOLD) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    digitalWrite(LED_PIN, HIGH);
-  } else {
-    digitalWrite(BUZZER_PIN, LOW);
-    digitalWrite(LED_PIN, LOW);
-  }
+  applyAlerts(adjustedTemp, adjustedHum);
 
   // Build upload URL
   String url = String(uploadEndpoint) +
@@ -237,12 +261,11 @@ void setup() {
 }
 
 void loop() {
-  // Ensure WiFi
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
   }
 
-  // Read sensors once
+  // Read sensor once
   float rawTemp = dht.readTemperature();
   float rawHum = dht.readHumidity();
 
@@ -250,24 +273,22 @@ void loop() {
     readNan++;
     Serial.println("DHT read failed, reinit.");
     dht.begin();
-    // Still show upload status if available
     struct tm timeinfo;
     char timeStr[9] = "--:--:--";
     if (getLocalTime(&timeinfo)) {
       strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
     }
-    float displayedTemp = isnan(rawTemp) ? 0.0 : rawTemp + tempOffset;
-    float displayedHum  = isnan(rawHum)  ? 0.0 : rawHum + humOffset;
-    updateLCD(displayedTemp, displayedHum, timeStr);
+    float dispTemp = isnan(rawTemp) ? 0.0 : rawTemp + tempOffset;
+    float dispHum  = isnan(rawHum)  ? 0.0 : rawHum + humOffset;
+    updateLCD(dispTemp, dispHum, timeStr);
+    applyAlerts(dispTemp, dispHum);
   } else {
     readDHTCount++;
     float adjustedTemp = rawTemp + tempOffset;
     float adjustedHum = rawHum + humOffset;
 
-    // Fetch calibration once per connection
-    fetchCalibration();
+    fetchCalibration(); // once per session
 
-    // Time for display
     struct tm timeinfo;
     char timeStr[9] = "--:--:--";
     if (getLocalTime(&timeinfo)) {
@@ -277,20 +298,13 @@ void loop() {
     // Always update display so it doesn't go stale
     updateLCD(adjustedTemp, adjustedHum, timeStr);
 
-    // Periodic upload
+    // Apply alert logic
+    applyAlerts(adjustedTemp, adjustedHum);
+
     unsigned long now = millis();
     if (now - lastUpload >= uploadInterval) {
       sendData(adjustedTemp, adjustedHum);
       lastUpload = now;
-    }
-
-    // Alert logic (redundant if inside sendData, but keep for immediate)
-    if (adjustedTemp > TEMP_THRESHOLD) {
-      digitalWrite(BUZZER_PIN, HIGH);
-      digitalWrite(LED_PIN, HIGH);
-    } else {
-      digitalWrite(BUZZER_PIN, LOW);
-      digitalWrite(LED_PIN, LOW);
     }
   }
 
