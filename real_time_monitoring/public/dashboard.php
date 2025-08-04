@@ -1,0 +1,170 @@
+<?php
+session_start();
+require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/functions.php';
+
+require_login(); // redirect if not logged in
+$username = $_SESSION['username'];
+$level = $_SESSION['level']; // should be normalized to lowercase earlier
+
+// Temperature threshold for visual alert (can also store in config/db)
+define('TEMP_THRESHOLD', 30.0);
+
+// Fetch latest reading per device
+$sql_latest = "
+SELECT ds.device_id, d.device_name,
+       ds.temperature, ds.humidity, ds.date, ds.ip_address
+FROM data_suhu ds
+LEFT JOIN device d ON ds.device_id = d.device_id
+INNER JOIN (
+    SELECT device_id, MAX(date) AS maxdate
+    FROM data_suhu
+    GROUP BY device_id
+) latest ON ds.device_id = latest.device_id AND ds.date = latest.maxdate
+ORDER BY ds.device_id;
+";
+$result_latest = $mysqli->query($sql_latest);
+
+// Fetch recent history (last 10 overall)
+$sql_history = "
+SELECT ds.device_id, d.device_name,
+       ds.temperature, ds.humidity, ds.date, ds.ip_address
+FROM data_suhu ds
+LEFT JOIN device d ON ds.device_id = d.device_id
+ORDER BY ds.date DESC
+LIMIT 30;
+";
+$result_history = $mysqli->query($sql_history);
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dashboard - Temperature Monitoring</title>
+  <link rel="stylesheet" href="style.css">
+  <meta http-equiv="refresh" content="30"> <!-- auto-refresh every 30s -->
+  <style>
+    .alert-high { background: #ffe5e5; }
+    .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.9em; }
+    .badge-warning { background: #f0ad4e; color: white; }
+    .badge-danger { background: #d9534f; color: white; }
+    .badge-normal { background: #5cb85c; color: white; }
+    .small { font-size: 0.85em; color: #555; }
+    .flex { display: flex; gap: 1rem; align-items: center; }
+    .card { background: white; padding: 16px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+  <div><strong>Temperature Monitoring Dashboard</strong></div>
+  <div class="flex" style="gap:1rem;">
+    <a href="dashboard.php">Home</a>
+    <a href="log_data.php">Log Data</a>
+    <a href="log_data.php?period=day">Data Per Hari</a>
+    <a href="log_data.php?period=week">Data Per Minggu</a>
+    <div>Welcome, <?= htmlentities($username) ?> (<?= htmlentities(ucfirst($level)) ?>)</div>
+    <div><a href="logout.php">Logout</a></div>
+  </div>
+</div>
+
+  <div class="card">
+    <h3>Latest Reading per Device</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Device ID</th>
+          <th>Name</th>
+          <th>Temp (°C)</th>
+          <th>Humidity (%)</th>
+          <th>Timestamp</th>
+          <th>IP</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php if ($result_latest && $result_latest->num_rows): ?>
+          <?php while ($row = $result_latest->fetch_assoc()): ?>
+            <?php 
+              $is_high = floatval($row['temperature']) > TEMP_THRESHOLD;
+              $row_class = $is_high ? 'alert-high' : '';
+            ?>
+            <tr class="<?= $row_class ?>">
+              <td><?= htmlentities($row['device_id']) ?></td>
+              <td><?= htmlentities($row['device_name'] ?: '-') ?></td>
+              <td>
+                <?= htmlentities(number_format($row['temperature'], 1)) ?>
+                <?php if ($is_high): ?>
+                  <span class="badge badge-danger">High</span>
+                <?php else: ?>
+                  <span class="badge badge-normal">OK</span>
+                <?php endif; ?>
+              </td>
+              <td><?= htmlentities(number_format($row['humidity'], 1)) ?></td>
+              <td><?= htmlentities($row['date']) ?></td>
+              <td><?= htmlentities($row['ip_address']) ?></td>
+              <td>
+                <?php if ($is_high): ?>
+                  <span class="badge badge-danger">Alert</span>
+                <?php else: ?>
+                  <span class="badge badge-normal">Normal</span>
+                <?php endif; ?>
+              </td>
+            </tr>
+          <?php endwhile; ?>
+        <?php else: ?>
+          <tr><td colspan="7">No data available.</td></tr>
+        <?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Recent History (Latest 30 records)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Device ID</th>
+          <th>Name</th>
+          <th>Temp (°C)</th>
+          <th>Humidity (%)</th>
+          <th>Timestamp</th>
+          <th>IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php if ($result_history && $result_history->num_rows): ?>
+          <?php while ($h = $result_history->fetch_assoc()): ?>
+            <tr>
+              <td><?= htmlentities($h['device_id']) ?></td>
+              <td><?= htmlentities($h['device_name'] ?: '-') ?></td>
+              <td><?= htmlentities(number_format($h['temperature'], 1)) ?></td>
+              <td><?= htmlentities(number_format($h['humidity'], 1)) ?></td>
+              <td><?= htmlentities($h['date']) ?></td>
+              <td><?= htmlentities($h['ip_address']) ?></td>
+            </tr>
+          <?php endwhile; ?>
+        <?php else: ?>
+          <tr><td colspan="6">No history available.</td></tr>
+        <?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+
+  <?php if (is_admin()): ?>
+    <div class="card">
+      <h3>Admin Controls</h3>
+      <p><a href="manage_users.php">Manage Users</a></p>
+      <!-- Future: Add buttons for threshold config, export CSV, etc. -->
+    </div>
+  <?php endif; ?>
+
+  <!-- Placeholder for chart (you can integrate Chart.js here) -->
+  <!-- Example:
+  <div class="card">
+    <h3>Temperature Trend (Device XYZ)</h3>
+    <canvas id="tempChart"></canvas>
+  </div>
+  -->
+
+</body>
+</html>
