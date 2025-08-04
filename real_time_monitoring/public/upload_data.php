@@ -1,92 +1,97 @@
 <?php
-// upload_data.php
+// public/upload_data.php
 header('Content-Type: application/json');
-session_write_close(); // no session needed here
 
-require_once __DIR__ . '/../config/db.php'; // adjust path if different; expects $mysqli
+// Load DB connection
+require_once __DIR__ . '/../config/db.php';
 
-// Optional rate limiting: minimum seconds between inserts per device
+// Minimum seconds between two readings from the same device
 define('MIN_INTERVAL_SECS', 30);
 
-// Get input (supports GET or POST)
-$device_id   = trim($_REQUEST['device_id'] ?? '');
-$device_name = trim($_REQUEST['device_name'] ?? '');
-$temperature = $_REQUEST['temperature'] ?? null;
-$humidity    = $_REQUEST['humidity'] ?? null;
-$ip_address  = $_SERVER['REMOTE_ADDR'];
+// --- Read input data ---
+$raw_body = file_get_contents('php://input');
+$data = json_decode($raw_body, true);
 
-// Validate required fields
+// If JSON decoding fails, fallback to form-urlencoded
+if (json_last_error() !== JSON_ERROR_NONE) {
+    $device_id   = trim($_REQUEST['device_id'] ?? '');
+    $device_name = trim($_REQUEST['device_name'] ?? '');
+    $temperature = isset($_REQUEST['temperature']) ? floatval($_REQUEST['temperature']) : null;
+    $humidity    = isset($_REQUEST['humidity']) ? floatval($_REQUEST['humidity']) : null;
+    $date        = null; // will use server time
+    $ip_address  = $_SERVER['REMOTE_ADDR'];
+} else {
+    $device_id   = trim($data['sensor_id'] ?? '');
+    $device_name = trim($data['device_name'] ?? '');
+    $temperature = isset($data['temperature']) ? floatval($data['temperature']) : null;
+    $humidity    = isset($data['humidity']) ? floatval($data['humidity']) : null;
+    $date        = trim($data['date'] ?? '');
+    $ip_address  = trim($data['ip_address'] ?? ($_SERVER['REMOTE_ADDR'] ?? ''));
+}
+
+// --- Validate required fields ---
 if ($device_id === '' || $temperature === null || $humidity === null) {
     http_response_code(400);
-    echo json_encode([
-        'status' => 'error',
-        'msg' => 'Missing required parameters. Need device_id, temperature, humidity.'
-    ]);
+    echo json_encode(['status' => 'error', 'msg' => 'Missing required parameters']);
     exit;
 }
 
-$temperature = floatval($temperature);
-$humidity = floatval($humidity);
-
-// Rate control: skip if last entry was too recent
+// --- Rate limiting check ---
 $allow_insert = true;
-$recent_stmt = $mysqli->prepare("
-    SELECT date 
-    FROM data_suhu 
-    WHERE device_id = ? 
-    ORDER BY date DESC 
+$stmt = $mysqli->prepare("
+    SELECT date FROM data_suhu
+    WHERE device_id = ?
+    ORDER BY date DESC
     LIMIT 1
 ");
-$recent_stmt->bind_param("s", $device_id);
-$recent_stmt->execute();
-$recent_stmt->bind_result($last_date);
-if ($recent_stmt->fetch()) {
+$stmt->bind_param("s", $device_id);
+$stmt->execute();
+$stmt->bind_result($last_date);
+if ($stmt->fetch()) {
     $recent_time = strtotime($last_date);
     if (time() - $recent_time < MIN_INTERVAL_SECS) {
         $allow_insert = false;
     }
 }
-$recent_stmt->close();
+$stmt->close();
 
 if (!$allow_insert) {
-    echo json_encode([
-        'status' => 'skipped',
-        'msg' => 'Too soon since last entry; waiting to avoid flooding.'
-    ]);
+    echo json_encode(['status' => 'skipped', 'msg' => 'Too soon since last entry']);
     exit;
 }
 
-// Upsert device record
-$upsert = $mysqli->prepare("
-    INSERT INTO device (device_id, device_name, ip_address, status, created_date)
-    VALUES (?, ?, ?, 'active', NOW())
+// --- Insert/Update device info ---
+// Your `device` table has extra columns, so we will keep what we can update
+$stmt = $mysqli->prepare("
+    INSERT INTO device (device_id, device_name, ip_address, created_date, status)
+    VALUES (?, ?, ?, NOW(), 'active')
     ON DUPLICATE KEY UPDATE 
         device_name = VALUES(device_name),
-        ip_address = VALUES(ip_address)
+        ip_address = VALUES(ip_address),
+        updated_date = NOW()
 ");
-$upsert->bind_param("sss", $device_id, $device_name, $ip_address);
-$upsert->execute();
-$upsert->close();
+$ip_for_device = $ip_address ?: ($_SERVER['REMOTE_ADDR'] ?? '');
+$stmt->bind_param("sss", $device_id, $device_name, $ip_for_device);
+$stmt->execute();
+$stmt->close();
 
-// Insert reading
-$insert = $mysqli->prepare("
-    INSERT INTO data_suhu (device_id, device_name, temperature, humidity, date, ip_address)
-    VALUES (?, ?, ?, ?, NOW(), ?)
+// --- Insert the reading into data_suhu ---
+$stmt = $mysqli->prepare("
+    INSERT INTO data_suhu (device_id, temperature, humidity, date, ip_address)
+    VALUES (?, ?, ?, ?, ?)
 ");
-$insert->bind_param("ssdds", $device_id, $device_name, $temperature, $humidity, $ip_address);
-if ($insert->execute()) {
+$timestamp = $date ?: date('Y-m-d H:i:s');
+$stmt->bind_param("sddss", $device_id, $temperature, $humidity, $timestamp, $ip_address);
+if ($stmt->execute()) {
     echo json_encode([
         'status' => 'success',
         'device_id' => $device_id,
         'temperature' => $temperature,
         'humidity' => $humidity,
-        'timestamp' => date('Y-m-d H:i:s')
+        'timestamp' => $timestamp
     ]);
 } else {
     http_response_code(500);
-    echo json_encode([
-        'status' => 'error',
-        'msg' => $mysqli->error
-    ]);
+    echo json_encode(['status' => 'error', 'msg' => $mysqli->error]);
 }
-$insert->close();
+$stmt->close();
