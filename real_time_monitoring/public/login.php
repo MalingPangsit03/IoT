@@ -3,8 +3,13 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../config/config.php';
+
+// Set PHP timezone (match your server timezone)
+date_default_timezone_set('Asia/Jakarta'); // or 'UTC' to match MySQL
 
 $error = '';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = trim($_POST['username'] ?? '');
     $password = $_POST['password'] ?? '';
@@ -12,17 +17,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($username === '' || $password === '') {
         $error = 'Username and password are required.';
     } else {
-        $stmt = $mysqli->prepare("SELECT id, password, level FROM user WHERE username = ?");
+        $stmt = $mysqli->prepare("SELECT id, username, password, level FROM user WHERE username = ?");
         $stmt->bind_param("s", $username);
         $stmt->execute();
-        $stmt->bind_result($id, $hash, $level);
+        $stmt->bind_result($id, $user, $hash, $level);
+
         if ($stmt->fetch()) {
             if (password_verify($password, $hash)) {
-                // login success
-                $_SESSION['user_id'] = $id;
-                $_SESSION['username'] = $username;
-                $_SESSION['level'] = strtolower($level);
-                header('Location: dashboard.php');
+                $stmt->close();
+
+                // ✅ 1. Generate OTP and expiration (5 minutes ahead)
+                $otp = random_int(100000, 999999);
+                $expires = date('Y-m-d H:i:s', time() + 300);
+
+                // ✅ 2. Insert OTP into database
+                $stmt = $mysqli->prepare("INSERT INTO otp_codes (user_id, otp_code, expires_at) VALUES (?, ?, ?)");
+                $stmt->bind_param("iss", $id, $otp, $expires);
+                $stmt->execute();
+                $stmt->close();
+
+                error_log("Generated OTP: $otp for user_id: $id");
+
+                // ✅ 3. Send OTP via email
+                $to = getEmailByUsername($username);
+                if ($to) {
+                    error_log("Sending OTP to: $to");
+                    send_otp_email($to, $otp);
+                } else {
+                    error_log("No email address found for username: $username");
+                }
+
+                // ✅ 4. Store session temporarily for OTP verification
+                $_SESSION['pending_user_id'] = $id;
+                $_SESSION['pending_username'] = $username;
+                $_SESSION['pending_level'] = strtolower($level);
+
+                header('Location: verify_otp.php');
                 exit;
             } else {
                 $error = 'Invalid credentials.';
@@ -60,10 +90,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
         <button class="btn" type="submit" style="width:100%;">Login</button>
       </form>
-      <div style="margin-top:12px; font-size:0.85rem; color:#555;">
-        <!-- Optional: add forgot password link if implemented -->
-        <!-- <a href="forgot_password.php">Forgot password?</a> -->
-      </div>
     </div>
   </div>
 </body>
