@@ -44,7 +44,8 @@ if (!$rawJson) {
     exit;
 }
 
-file_put_contents("raw_debug.txt", $rawJson); // Optional logging
+// Optional logging for debugging
+file_put_contents("raw_debug.txt", $rawJson);
 
 // === Parse JSON ===
 $data = json_decode($rawJson, true);
@@ -60,6 +61,8 @@ $device_id   = trim($data['device_id'] ?? '');
 $device_name = trim($data['device_name'] ?? '');
 $temperature = isset($data['temperature']) ? floatval($data['temperature']) : null;
 $humidity    = isset($data['humidity']) ? floatval($data['humidity']) : null;
+$temp_alert  = isset($data['temp_alert']) ? intval($data['temp_alert']) : 0;
+$hum_alert   = isset($data['hum_alert']) ? intval($data['hum_alert']) : 0;
 $date        = trim($data['date'] ?? '');
 $ip_address  = trim($data['ip_address'] ?? $_SERVER['REMOTE_ADDR']);
 
@@ -70,7 +73,7 @@ if ($device_id === '' || $temperature === null || $humidity === null) {
 }
 
 date_default_timezone_set('Asia/Jakarta');
-$date = date('Y-m-d H:i:s'); // Overwrite to ensure trusted server-side time
+$date = date('Y-m-d H:i:s'); // Trusted server-side time
 
 // === Anti-Spam: Block too frequent uploads ===
 define('MIN_INTERVAL_SECS', 30); // 0 = no cooldown
@@ -93,25 +96,28 @@ if (!$allow_insert) {
     exit;
 }
 
-// === Insert or Update Device Info ===
+// === Insert or Update Device Info (with alert status) ===
+$alert_status = ($temp_alert || $hum_alert) ? 'alert' : 'normal';
+
 $stmt = $mysqli->prepare("
-    INSERT INTO device (device_id, device_name, ip_address, created_date, status)
-    VALUES (?, ?, ?, NOW(), 'active')
+    INSERT INTO device (device_id, device_name, ip_address, created_date, status, alert_status)
+    VALUES (?, ?, ?, NOW(), 'active', ?)
     ON DUPLICATE KEY UPDATE 
         device_name = VALUES(device_name),
         ip_address = VALUES(ip_address),
-        updated_date = NOW()
+        updated_date = NOW(),
+        alert_status = VALUES(alert_status)
 ");
-$stmt->bind_param("sss", $device_id, $device_name, $ip_address);
+$stmt->bind_param("ssss", $device_id, $device_name, $ip_address, $alert_status);
 $stmt->execute();
 $stmt->close();
 
-// === Insert Sensor Reading ===
+// === Insert Sensor Reading (with alert flags) ===
 $stmt = $mysqli->prepare("
-    INSERT INTO data_suhu (device_id, temperature, humidity, date, ip_address)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO data_suhu (device_id, temperature, humidity, temp_alert, hum_alert, date, ip_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
 ");
-$stmt->bind_param("sddss", $device_id, $temperature, $humidity, $date, $ip_address);
+$stmt->bind_param("sddiiss", $device_id, $temperature, $humidity, $temp_alert, $hum_alert, $date, $ip_address);
 
 if ($stmt->execute()) {
     echo json_encode([
@@ -119,6 +125,8 @@ if ($stmt->execute()) {
         'device_id' => $device_id,
         'temperature' => $temperature,
         'humidity' => $humidity,
+        'temp_alert' => $temp_alert,
+        'hum_alert' => $hum_alert,
         'timestamp' => $date
     ]);
 } else {

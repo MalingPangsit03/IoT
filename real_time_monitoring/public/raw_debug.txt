@@ -1,1 +1,1 @@
-{"device_id":"Tools-1","device_name":"Suhu Ruang | Ruang Kamar","temperature":30.8,"humidity":74.7,"date":"2025-08-05 16:11:25","ip_address":"192.168.100.5"}
+{"device_id":"Tools-1","device_name":"Suhu Ruang | Ruang Kamar","temperature":30.5,"humidity":94.3,"date":"2025-08-08 11:38:20","ip_address":"192.168.100.5","temp_alert":0,"hum_alert":1}

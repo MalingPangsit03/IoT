@@ -4,17 +4,16 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-require_login(); // ✅ BLOCK direct access without full login + OTP
+require_login(); // Block direct access without login + OTP
 
 $username = $_SESSION['username'];
-$level = $_SESSION['level'];
+$level    = $_SESSION['level'];
 
-define('TEMP_THRESHOLD', 30.0);
-
-// ✅ Latest reading per device
+// ✅ Latest reading per device with alert_status
 $sql_latest = "
 SELECT ds.device_id, d.device_name,
-       ds.temperature, ds.humidity, ds.date, ds.ip_address
+       ds.temperature, ds.humidity, ds.date, ds.ip_address,
+       d.alert_status
 FROM data_suhu ds
 LEFT JOIN device d ON ds.device_id = d.device_id
 INNER JOIN (
@@ -84,32 +83,36 @@ $result_history = $mysqli->query($sql_history);
       </tr>
     </thead>
     <tbody>
-      <?php if ($result_latest && $result_latest->num_rows): ?>
-        <?php while ($row = $result_latest->fetch_assoc()): ?>
-          <?php 
-            $is_high = floatval($row['temperature']) > TEMP_THRESHOLD;
-            $row_class = $is_high ? 'alert-high' : '';
-          ?>
+      <?php
+      $any_alert = false;
+      if ($result_latest && $result_latest->num_rows):
+        while ($row = $result_latest->fetch_assoc()):
+          $is_alert = ($row['alert_status'] === 'alert');
+          if ($is_alert) $any_alert = true;
+          $row_class = $is_alert ? 'alert-high' : '';
+      ?>
           <tr class="<?= $row_class ?>">
             <td><?= htmlentities($row['device_id']) ?></td>
             <td><?= htmlentities($row['device_name'] ?: '-') ?></td>
             <td>
               <?= number_format($row['temperature'], 1) ?>
-              <span class="badge <?= $is_high ? 'badge-danger' : 'badge-normal' ?>">
-                <?= $is_high ? 'High' : 'OK' ?>
+              <span class="badge <?= $is_alert ? 'badge-danger' : 'badge-normal' ?>">
+                <?= $is_alert ? 'High' : 'OK' ?>
               </span>
             </td>
             <td><?= number_format($row['humidity'], 1) ?></td>
             <td><?= htmlentities($row['date']) ?></td>
             <td><?= htmlentities($row['ip_address']) ?></td>
             <td>
-              <span class="badge <?= $is_high ? 'badge-danger' : 'badge-normal' ?>">
-                <?= $is_high ? 'Alert' : 'Normal' ?>
+              <span class="badge <?= $is_alert ? 'badge-danger' : 'badge-normal' ?>">
+                <?= $is_alert ? 'Alert' : 'Normal' ?>
               </span>
             </td>
           </tr>
-        <?php endwhile; ?>
-      <?php else: ?>
+      <?php
+        endwhile;
+      else:
+      ?>
         <tr><td colspan="7">No data available.</td></tr>
       <?php endif; ?>
     </tbody>
@@ -153,6 +156,14 @@ $result_history = $mysqli->query($sql_history);
     <h3>Admin Controls</h3>
     <p><a href="manage_users.php">Manage Users</a></p>
   </div>
+<?php endif; ?>
+
+<?php if ($any_alert): ?>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    alert("⚠️ Warning: One or more devices are in ALERT mode!");
+});
+</script>
 <?php endif; ?>
 
 </body>
